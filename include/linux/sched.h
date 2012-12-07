@@ -794,7 +794,7 @@ enum cpu_idle_type {
 #define SCHED_LOAD_SCALE	(1L << SCHED_LOAD_SHIFT)
 
 /*
- * Increase resolution of cpu_power calculations
+ * Increase resolution of cpu_power and rq->util calculations
  */
 #define SCHED_POWER_SHIFT	10
 #define SCHED_POWER_SCALE	(1L << SCHED_POWER_SHIFT)
