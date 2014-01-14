@@ -4159,6 +4159,10 @@ find_idlest_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
 	int idlest = -1;
 	int i;
 
+#ifdef CONFIG_NO_HZ_COMMON
+	s64 latest_wake = 0;
+#endif
+
 	/* Traverse only the allowed CPUs */
 	for_each_cpu_and(i, sched_group_cpus(group), tsk_cpus_allowed(p)) {
 		load = weighted_cpuload(i);
@@ -4167,6 +4171,30 @@ find_idlest_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
 			min_load = load;
 			idlest = i;
 		}
+#ifdef CONFIG_NO_HZ_COMMON
+		/*
+		 * Coarsely to get the latest idle cpu for shorter latency and
+		 * possible power benefit.
+		 */
+		if (!load) {
+			struct tick_sched *ts = &per_cpu(tick_cpu_sched, i);
+
+			/* idle cpu doing irq */
+			if (ts->inidle && !ts->idle_active)
+				idlest = i;
+			/* the cpu resched */
+			else if (!ts->inidle)
+				idlest = i;
+			/* find latest idle cpu */
+			else {
+				s64 temp = ktime_to_us(ts->idle_entrytime);
+				if (temp > latest_wake) {
+					latest_wake = temp;
+					idlest = i;
+				}
+			}
+		}
+#endif
 	}
 
 	return idlest;
