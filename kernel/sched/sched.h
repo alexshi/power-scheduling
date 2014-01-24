@@ -1547,3 +1547,5 @@ static inline u64 irq_time_read(int cpu)
 }
 #endif /* CONFIG_64BIT */
 #endif /* CONFIG_IRQ_TIME_ACCOUNTING */
+
+extern int tick_do_timer_cpu __read_mostly;

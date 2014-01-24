@@ -2446,8 +2446,11 @@ void scheduler_tick(void)
 	perf_event_task_tick();
 
 #ifdef CONFIG_SMP
-	rq->idle_balance = idle_cpu(cpu);
-	trigger_load_balance(rq);
+	/* only do load balance on tick_do_timer_cpu */
+	if (cpu == tick_do_timer_cpu) {
+		rq->idle_balance = idle_cpu(cpu);
+		trigger_load_balance(rq);
+	}
 #endif
 	rq_last_tick_reset(rq);
 }
