@@ -6847,24 +6847,305 @@ need_kick:
 static void nohz_idle_balance(struct rq *this_rq, enum cpu_idle_type idle) { }
 #endif
 
+struct cpu_ld {
+	int cpu;
+	unsigned int cfs_nr_running;
+
+	long imb;
+	unsigned long cfs_load;
+	unsigned long cpu_power;
+	unsigned long rt_power;
+
+	struct rb_node node;
+};
+
+struct sd_ld_info {
+	struct sched_domain *sd;
+	struct rb_root unutil, ovutil;
+};
+
+void insert_cpuload_tree(struct rb_root *root, struct cpu_ld *new)
+{
+	struct rb_node **link = &root->rb_node, *parent = NULL;
+	long imb = new->imb;
+	struct cpu_ld *cld;
+
+	/* Go to the bottom of the tree */
+	while (*link) {
+		parent = *link;
+		cld = rb_entry(parent, struct cpu_ld, node);
+
+		if (cld->imb > imb)
+			link = &parent->rb_left;
+		else
+			link = &parent->rb_right;
+	}
+
+	/* Put the new node there */
+	rb_link_node(&new->node, parent, link);
+	rb_insert_color(&new->node, root);
+}
+
+/* imb is less then average load ratio */
+static int is_cpu_balanced(struct cpu_ld *cld, int pct)
+{
+	if (abs(cld->imb) * 200 <= (cld->cfs_load - cld->imb) * (pct - 100))
+		return 1;
+	return 0;
+}
+
+static int is_suitable(struct cpu_ld *dst, struct cpu_ld *src)
+{
+	/*
+	 * we can add more condition here, like numa/power balancing
+	 * consideration.
+	 */
+
+	if (src->cfs_nr_running <= 1)
+		return 0;
+	return 1;
+}
+
+static struct cpu_ld *cpu_ld_of(struct rb_node *node)
+{
+	return rb_entry(node, struct cpu_ld, node);
+}
+
+/* find out the best fit node for dst cpu in src tree, if no, return the nearest */
+static struct rb_node *first_fit_node(struct cpu_ld *cld, struct rb_root *root, int pct)
+{
+	struct rb_node *node, *last_node = NULL;
+	unsigned long terget_ld, up_ld, bottom_ld;
+	int half_pct = ((pct - 100) >> 2) + 100;
+
+	terget_ld = cld->cfs_load - cld->imb;
+	up_ld = terget_ld * half_pct / 100;
+	bottom_ld = terget_ld * (200 - half_pct) / 100;
+
+	node = root->rb_node;
+	while (node) {
+		struct cpu_ld *data = rb_entry(node, struct cpu_ld, node);
+		unsigned long predicted_ld = cld->cfs_load + data->imb;
+
+		last_node = node;
+
+		if (predicted_ld <= up_ld && predicted_ld >= bottom_ld)
+			return node;
+		else if (predicted_ld > up_ld)
+			node = node->rb_left;
+		else
+			node = node->rb_right;
+	}
+	return last_node;
+}
+
+/* do balance in one domain */
+static void balance_sds(struct sd_ld_info *slip, struct cpumask *cpus, int *balanced)
+{
+	struct rb_node *np_dst, *np_src;
+	struct cpu_ld *dst, *src;
+
+	/* skip balance for debug purpose */
+	return;
+
+	np_dst = rb_first(&slip->unutil);
+	while (np_dst) {
+		struct rb_node *this_dst = np_dst;
+		unsigned long moved_ld, want_ld;
+		int pulled_tasks = 0;
+
+		dst = cpu_ld_of(np_dst);
+		want_ld = dst->imb;
+
+		/* seek src cpu in ovutil tree */
+		np_src = first_fit_node(dst, &slip->ovutil, slip->sd->imbalance_pct);
+		while (np_src) {
+			struct rb_node *this_src = np_src;
+			struct lb_env env;
+			unsigned long flags;
+
+			src = cpu_ld_of(np_src);
+			np_src = rb_next(np_src);
+
+			/* no fit node in src cpu */
+			if (!is_suitable(dst, src))
+				continue;
+
+			memset(&env, 0, sizeof(struct lb_env));
+
+			env.src_cpu = src->cpu;
+			env.src_rq = cpu_rq(src->cpu);
+			env.imbalance = -dst->imb;
+			env.dst_cpu = dst->cpu;
+			env.dst_rq = cpu_rq(dst->cpu);
+			env.cpus = cpus;
+			env.sd = slip->sd;
+			env.loop_break = sched_nr_migrate_break;
+			env.loop_max  = min(sysctl_sched_nr_migrate,
+					dst->cfs_nr_running);
+
+			local_irq_save(flags);
+			double_rq_lock(env.dst_rq, env.src_rq);
+			pulled_tasks = move_tasks(&env);
+			double_rq_unlock(env.dst_rq, env.src_rq);
+			local_irq_restore(flags);
+
+			moved_ld = -want_ld - env.imbalance;
+			dst->imb += moved_ld;
+			src->imb -= moved_ld;
+			dst->cfs_nr_running += pulled_tasks;
+			src->cfs_nr_running -= pulled_tasks;
+
+			if (pulled_tasks== 0)
+				continue;
+
+			/* some load move to dst cpu from src cpu, so rebuild src tree */
+			rb_erase(this_src, &slip->ovutil);
+			if (is_cpu_balanced(src, slip->sd->imbalance_pct) || src->imb <= 0 ||
+					src->cfs_nr_running <= 1)
+				cpumask_clear_cpu(src->cpu, cpus);
+			else
+				insert_cpuload_tree(&slip->ovutil, src);
+
+			/* target cpu balanced, so remove dst cpu from tree */
+			if (is_cpu_balanced(dst, slip->sd->imbalance_pct) || dst->imb >= 0)
+				break;
+
+			/* try fetch more load from next src tree point */
+
+		}
+
+		/* moving forward, whenever dst cpu balanced */
+		np_dst = rb_next(this_dst);
+		rb_erase(this_dst, &slip->unutil);
+		cpumask_clear_cpu(dst->cpu, cpus);
+
+		/* any dst cpu is not balanced in this domain */
+		if (!is_cpu_balanced(dst, slip->sd->imbalance_pct))
+			*balanced = 0;
+	}
+}
+
+struct sd_ld_info top_sd;
+
+static void balance_system(void)
+{
+	int i, cpu;
+	int cur_id = -1, all_balanced = 1;
+	struct cpu_ld cpuld[nr_cpu_ids], *cld;
+	struct sd_ld_info sli[nr_cpu_ids], *slip;
+	unsigned long total_power = 0, total_load = 0;
+	struct cpumask *cpus = __get_cpu_var(load_balance_mask);
+
+	memset(cpuld, 0, sizeof(struct cpu_ld) * nr_cpu_ids);
+
+	cpumask_copy(cpus, cpu_active_mask);
+	/* cpumask_andnot(cpus, cpu_online_mask, idle_cpus_mask); */
+
+	/* collecting all cpus' load */
+	for_each_cpu(cpu, cpus) {
+		struct rq *rq = cpu_rq(cpu);
+		cld = &cpuld[cpu];
+
+		cld->cpu = cpu;
+		cld->cfs_load = weighted_cpuload(cpu);
+		cld->cpu_power = rq->cpu_power;
+		cld->cfs_nr_running = rq->cfs.h_nr_running;
+
+		total_load += cld->cfs_load;
+		/* TODO, get rid of rt power */
+		total_power += cld->cpu_power;
+	}
+
+	/*
+	 * get system avgerage load, and fill sli,
+	 * (cpu_load - imb load) / cpu_power = total_load / total_power;
+	 */
+	memset(sli, 0, sizeof(struct sd_ld_info) * nr_cpu_ids);
+
+	rcu_read_lock();
+	for_each_cpu(cpu, cpus) {
+		struct sched_domain *sd = rcu_dereference(per_cpu(sd_llc, cpu));
+		int id = per_cpu(sd_llc_id, cpu);
+
+		if (!sd)
+			continue;
+
+		/* have a llc domain, */
+		if (cur_id == -1)
+			cur_id = id;
+
+		cld = &cpuld[cpu];
+		cld->imb = cld->cfs_load - (cld->cpu_power * total_load) / total_power;
+
+		/* this cpu almost balanced, so skip it */
+		if (is_cpu_balanced(cld, sd->imbalance_pct))
+			continue;
+
+		slip = &sli[id];
+
+		/* the only usage of sd is to fit reused balance functions like move_tasks() */
+		slip->sd = sd;
+
+		/* setup under utilization tree */
+		if (cld->imb < 0)
+			insert_cpuload_tree(&slip->unutil, cld);
+		else if (cld->cfs_nr_running > 1)
+			insert_cpuload_tree(&slip->ovutil, cld);
+	}
+
+	/* do load balance in llc sd internal first */
+	for (i = 0; i < nr_cpu_ids; i++) {
+		slip = &sli[i];
+
+		if (!slip->sd || RB_EMPTY_ROOT(&slip->unutil) || RB_EMPTY_ROOT(&slip->ovutil))
+			continue;
+		else
+			balance_sds(slip, cpus, &all_balanced);
+	}
+	rcu_read_unlock();
+
+	/* all cpus balanced */
+	if (cur_id != -1 && all_balanced)
+		return;
+
+	memset(&top_sd, 0, sizeof(struct sd_ld_info));
+
+	rcu_read_lock();
+	top_sd.sd = highest_flag_domain(smp_processor_id(), SD_LOAD_BALANCE);
+
+	if (!top_sd.sd) {
+		rcu_read_unlock();
+		return;
+	}
+
+	/* rebuild unbalance cpus tree in system */
+	for_each_cpu(cpu, cpus) {
+		cld = &cpuld[cpu];
+		/* this cpu almost balanced, so skip it */
+		if (is_cpu_balanced(cld, top_sd.sd->imbalance_pct))
+			continue;
+
+		if (cld->imb < 0)
+			insert_cpuload_tree(&top_sd.unutil, cld);
+		else if (cld->cfs_nr_running > 1)
+			insert_cpuload_tree(&top_sd.ovutil, cld);
+	}
+
+	/* do load balance in whole system */
+	if (!RB_EMPTY_ROOT(&top_sd.unutil) && !RB_EMPTY_ROOT(&top_sd.ovutil))
+		balance_sds(&top_sd, cpus, &all_balanced);
+	rcu_read_unlock();
+}
+
+
 /*
  * run_rebalance_domains is triggered when needed from the scheduler tick.
  * Also triggered for nohz idle balancing (with nohz_balancing_kick set).
  */
-static void run_rebalance_domains(struct softirq_action *h)
+static void run_balance_system(struct softirq_action *h)
 {
-	struct rq *this_rq = this_rq();
-	enum cpu_idle_type idle = this_rq->idle_balance ?
-						CPU_IDLE : CPU_NOT_IDLE;
-
-	rebalance_domains(this_rq, idle);
-
-	/*
-	 * If this cpu has a pending nohz_balance_kick, then do the
-	 * balancing on behalf of the other idle cpus whose ticks are
-	 * stopped.
-	 */
-	nohz_idle_balance(this_rq, idle);
+	balance_system();
 }
 
 static inline int on_null_domain(struct rq *rq)
@@ -6881,12 +7162,7 @@ void trigger_load_balance(struct rq *rq)
 	if (unlikely(on_null_domain(rq)))
 		return;
 
-	if (time_after_eq(jiffies, rq->next_balance))
-		raise_softirq(SCHED_SOFTIRQ);
-#ifdef CONFIG_NO_HZ_COMMON
-	if (nohz_kick_needed(rq))
-		nohz_balancer_kick();
-#endif
+	raise_softirq(SCHED_SOFTIRQ);
 }
 
 static void rq_online_fair(struct rq *rq)
@@ -7356,7 +7632,7 @@ void print_cfs_stats(struct seq_file *m, int cpu)
 __init void init_sched_fair_class(void)
 {
 #ifdef CONFIG_SMP
-	open_softirq(SCHED_SOFTIRQ, run_rebalance_domains);
+	open_softirq(SCHED_SOFTIRQ, run_balance_system);
 
 #ifdef CONFIG_NO_HZ_COMMON
 	nohz.next_balance = jiffies;
