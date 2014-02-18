@@ -7026,6 +7026,8 @@ static void balance_sds(struct sd_ld_info *slip, struct cpumask *cpus, int *bala
 }
 
 struct sd_ld_info top_sd;
+unsigned int sysctl_sched_balance_interval = 0;
+unsigned long next_top_balance = 0;
 
 static void balance_system(void)
 {
@@ -7125,6 +7127,17 @@ static void balance_system(void)
 		rcu_read_unlock();
 		goto end;
 	}
+
+	if (!time_after(jiffies, next_top_balance)) {
+		rcu_read_unlock();
+		return;
+	}
+
+	if (sysctl_sched_balance_interval)
+		next_top_balance = jiffies + sysctl_sched_balance_interval;
+	else
+		/* we don't cost much as current balance */
+		next_top_balance = jiffies + top_sd.sd->min_interval/4;
 
 	/* rebuild unbalance cpus tree in system */
 	for_each_cpu(cpu, cpus) {
