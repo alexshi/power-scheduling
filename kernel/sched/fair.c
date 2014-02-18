@@ -7071,6 +7071,13 @@ static void balance_system(void)
 		if (!sd)
 			continue;
 
+		/* trade per cpu sd data touch by part llc cpu balance skip */
+		if (!time_after(jiffies, sd->last_balance + sd->max_interval/2)) {
+			cpumask_andnot(cpus, cpu_active_mask, sched_domain_span(sd));
+			continue;
+		}
+		sd->last_balance = jiffies;
+
 		/* have a llc domain, */
 		if (cur_id == -1)
 			cur_id = id;
