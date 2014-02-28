@@ -2706,7 +2706,7 @@ need_resched:
 	pre_schedule(rq, prev);
 
 	if (unlikely(!rq->nr_running))
-		idle_balance(cpu, rq);
+		new_idle_balance(cpu, rq);
 
 	put_prev_task(rq, prev);
 	next = pick_next_task(rq);

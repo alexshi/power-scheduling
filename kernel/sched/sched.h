@@ -1175,14 +1175,14 @@ extern const struct sched_class idle_sched_class;
 extern void update_group_power(struct sched_domain *sd, int cpu);
 
 extern void trigger_load_balance(struct rq *rq);
-extern void idle_balance(int this_cpu, struct rq *this_rq);
+extern void new_idle_balance(int this_cpu, struct rq *this_rq);
 
 extern void idle_enter_fair(struct rq *this_rq);
 extern void idle_exit_fair(struct rq *this_rq);
 
 #else	/* CONFIG_SMP */
 
-static inline void idle_balance(int cpu, struct rq *rq)
+static inline void new_idle_balance(int cpu, struct rq *rq)
 {
 }
 

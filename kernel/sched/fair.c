@@ -7178,6 +7178,87 @@ static void run_balance_system(struct softirq_action *h)
 	balance_system();
 }
 
+void new_idle_balance(int this_cpu, struct rq *this_rq)
+{
+	int cpu;
+	int single_sd = 0, all_balanced = 1;
+	struct cpu_ld cpuld[nr_cpu_ids], *cld;
+	struct sd_ld_info sli, *slip;
+	unsigned long total_power = 0, total_load = 0;
+	struct sched_domain *sd;
+	struct cpumask *cpus = __get_cpu_var(load_balance_mask);
+
+	long pre_imb;
+
+	raw_spin_unlock(&this_rq->lock);
+	rcu_read_lock();
+	sd = rcu_dereference(per_cpu(sd_llc, this_cpu));
+
+	if (!sd) {
+global:
+		sd = highest_flag_domain(smp_processor_id(), SD_LOAD_BALANCE);
+		single_sd = 1;
+	}
+	if (!sd)
+		goto end;
+
+	cpumask_copy(cpus, sched_domain_span(sd));
+	memset(cpuld, 0, sizeof(struct cpu_ld) * nr_cpu_ids);
+	for_each_cpu(cpu, cpus) {
+		struct rq *rq = cpu_rq(cpu);
+		cld = &cpuld[cpu];
+
+		cld->cpu = cpu;
+		cld->cfs_load = weighted_cpuload(cpu);
+		cld->cpu_power = rq->cpu_power;
+		cld->cfs_nr_running = rq->cfs.h_nr_running;
+
+		total_load += cld->cfs_load;
+		/* TODO, get rid of rt power */
+		total_power += cld->cpu_power;
+	}
+
+	/*
+	 * get system avgerage load, and fill sli,
+	 * (cpu_load - imb load) / cpu_power = total_load / total_power;
+	 */
+	memset(&sli, 0, sizeof(struct sd_ld_info));
+	slip = &sli;
+	slip->sd = sd;
+	for_each_cpu(cpu, cpus) {
+
+		cld = &cpuld[cpu];
+		cld->imb = cld->cfs_load - (cld->cpu_power * total_load) / total_power;
+
+		/* this cpu almost balanced, so skip it */
+		if (is_cpu_balanced(cld, sd->imbalance_pct))
+			continue;
+
+		if (cpu == this_cpu) {
+			insert_cpuload_tree(&slip->unutil, cld);
+			continue;
+		}
+
+		/* setup under utilization tree */
+		if (cld->imb > 0 && cld->cfs_nr_running > 1)
+			insert_cpuload_tree(&slip->ovutil, cld);
+
+	}
+
+	pre_imb = cpuld[this_cpu].imb;
+
+	if (!RB_EMPTY_ROOT(&slip->unutil) && !RB_EMPTY_ROOT(&slip->ovutil))
+		balance_sds(slip, cpus, &all_balanced);
+
+	/* we are top sd, or already pulled some load */
+	if (single_sd || cpuld[this_cpu].imb > pre_imb)
+		goto end;
+	goto global;
+end:
+	rcu_read_unlock();
+	raw_spin_lock(&this_rq->lock);
+}
+
 static inline int on_null_domain(struct rq *rq)
 {
 	return !rcu_dereference_sched(rq->sd);
