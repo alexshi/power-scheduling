@@ -6850,6 +6850,7 @@ static void nohz_idle_balance(struct rq *this_rq, enum cpu_idle_type idle) { }
 struct cpu_ld {
 	int cpu;
 	unsigned int cfs_nr_running;
+	int pulled;
 
 	long imb;
 	unsigned long cfs_load;
@@ -6999,6 +7000,8 @@ static void balance_sds(struct sd_ld_info *slip, struct cpumask *cpus, int *bala
 			if (pulled_tasks== 0)
 				continue;
 
+			dst->pulled = 1;
+
 			/* some load move to dst cpu from src cpu, so rebuild src tree */
 			rb_erase(this_src, &slip->ovutil);
 			if (is_cpu_balanced(src, slip->sd->imbalance_pct) || src->imb <= 0 ||
@@ -7051,6 +7054,7 @@ static void balance_system(void)
 		cld->cfs_load = weighted_cpuload(cpu);
 		cld->cpu_power = rq->cpu_power;
 		cld->cfs_nr_running = rq->cfs.h_nr_running;
+		cld->pulled = 0;
 
 		total_load += cld->cfs_load;
 		/* TODO, get rid of rt power */
@@ -7107,7 +7111,7 @@ static void balance_system(void)
 
 	/* all cpus balanced */
 	if (cur_id != -1 && all_balanced)
-		return;
+		goto end;
 
 	memset(&top_sd, 0, sizeof(struct sd_ld_info));
 
@@ -7116,7 +7120,7 @@ static void balance_system(void)
 
 	if (!top_sd.sd) {
 		rcu_read_unlock();
-		return;
+		goto end;
 	}
 
 	/* rebuild unbalance cpus tree in system */
@@ -7135,6 +7139,16 @@ static void balance_system(void)
 	/* do load balance in whole system */
 	if (!RB_EMPTY_ROOT(&top_sd.unutil) && !RB_EMPTY_ROOT(&top_sd.ovutil))
 		balance_sds(&top_sd, cpus, &all_balanced);
+	rcu_read_unlock();
+
+end:
+	rcu_read_lock();
+	cpumask_copy(cpus, cpu_active_mask);
+	for_each_cpu(cpu, cpus) {
+		cld = &cpuld[cpu];
+		if (cld->pulled && idle_cpu(cld->cpu) && cld->cpu != smp_processor_id())
+			resched_cpu(cld->cpu);
+	}
 	rcu_read_unlock();
 }
 
