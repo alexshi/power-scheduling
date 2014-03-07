@@ -6946,9 +6946,6 @@ static void balance_sds(struct sd_ld_info *slip, struct cpumask *cpus, int *bala
 	struct rb_node *np_dst, *np_src;
 	struct cpu_ld *dst, *src;
 
-	/* skip balance for debug purpose */
-	return;
-
 	np_dst = rb_first(&slip->unutil);
 	while (np_dst) {
 		struct rb_node *this_dst = np_dst;
@@ -6967,7 +6964,7 @@ static void balance_sds(struct sd_ld_info *slip, struct cpumask *cpus, int *bala
 
 			src = cpu_ld_of(np_src);
 			np_src = rb_next(np_src);
-
+#if 0
 			/* no fit node in src cpu */
 			if (!is_suitable(dst, src))
 				continue;
@@ -7015,7 +7012,7 @@ static void balance_sds(struct sd_ld_info *slip, struct cpumask *cpus, int *bala
 				break;
 
 			/* try fetch more load from next src tree point */
-
+#endif
 		}
 
 		/* moving forward, whenever dst cpu balanced */
