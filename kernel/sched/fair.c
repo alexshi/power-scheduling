@@ -7190,6 +7190,11 @@ void new_idle_balance(int this_cpu, struct rq *this_rq)
 
 	long pre_imb;
 
+	this_rq->idle_stamp = rq_clock(this_rq);
+
+	if (this_rq->avg_idle < sysctl_sched_migration_cost)
+		return;
+
 	raw_spin_unlock(&this_rq->lock);
 	rcu_read_lock();
 	sd = rcu_dereference(per_cpu(sd_llc, this_cpu));
@@ -7250,9 +7255,16 @@ global:
 	if (!RB_EMPTY_ROOT(&slip->unutil) && !RB_EMPTY_ROOT(&slip->ovutil))
 		balance_sds(slip, cpus, &all_balanced);
 
-	/* we are top sd, or already pulled some load */
-	if (single_sd || cpuld[this_cpu].imb > pre_imb)
+	/* pulled some load */
+	if (cpuld[this_cpu].imb > pre_imb) {
+		this_rq->idle_stamp = 0;
 		goto end;
+	}
+
+	/* we are top sd */
+	if (single_sd)
+		goto end;
+
 	goto global;
 end:
 	rcu_read_unlock();
