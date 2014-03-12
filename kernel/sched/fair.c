@@ -6999,7 +6999,6 @@ static void balance_sds(struct sd_ld_info *slip, struct cpumask *cpus, int *bala
 
 			dst->pulled = 1;
 
-#if 0
 			/* some load move to dst cpu from src cpu, so rebuild src tree */
 			rb_erase(this_src, &slip->ovutil);
 			if (is_cpu_balanced(src, slip->sd->imbalance_pct) || src->imb <= 0 ||
@@ -7013,7 +7012,6 @@ static void balance_sds(struct sd_ld_info *slip, struct cpumask *cpus, int *bala
 				break;
 
 			/* try fetch more load from next src tree point */
-#endif
 		}
 
 		/* moving forward, whenever dst cpu balanced */
