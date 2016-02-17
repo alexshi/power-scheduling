@@ -34,6 +34,7 @@
 #include <trace/events/sched.h>
 
 #include "sched.h"
+#include "../time/tick-sched.h"
 
 /*
  * Targeted preemption latency for CPU-bound tasks:
@@ -4922,6 +4923,7 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p,
 /*
  * find_idlest_cpu - find the idlest cpu among the cpus in group.
  */
+DECLARE_PER_CPU(struct tick_sched, tick_cpu_sched);
 static int
 find_idlest_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
 {
@@ -4930,6 +4932,7 @@ find_idlest_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
 	u64 latest_idle_timestamp = 0;
 	int least_loaded_cpu = this_cpu;
 	int shallowest_idle_cpu = -1;
+	int interrupted_idle = -1;
 	int i;
 
 	/* Traverse only the allowed CPUs */
@@ -4937,6 +4940,15 @@ find_idlest_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
 		if (idle_cpu(i)) {
 			struct rq *rq = cpu_rq(i);
 			struct cpuidle_state *idle = idle_get_state(rq);
+
+#ifdef CONFIG_NO_HZ_COMMON
+			struct tick_sched *ts = &per_cpu(tick_cpu_sched, i);
+			if (ts->inidle && !ts->idle_active) {
+				/* idle cpu doing irq */
+				interrupted_idle = i;
+				break;
+			}
+#endif
 			if (idle && idle->exit_latency < min_exit_latency) {
 				/*
 				 * We give priority to a CPU whose idle state
@@ -4964,6 +4976,9 @@ find_idlest_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
 			}
 		}
 	}
+
+	if (interrupted_idle != -1)
+		return interrupted_idle;
 
 	return shallowest_idle_cpu != -1 ? shallowest_idle_cpu : least_loaded_cpu;
 }
