@@ -134,7 +134,10 @@ void native_flush_tlb_others(const struct cpumask *cpumask,
 				 struct mm_struct *mm, unsigned long start,
 				 unsigned long end)
 {
+	int cpu;
 	struct flush_tlb_info info;
+	cpumask_t flush_mask, *sblmask;
+
 	info.flush_mm = mm;
 	info.flush_start = start;
 	info.flush_end = end;
@@ -151,7 +154,23 @@ void native_flush_tlb_others(const struct cpumask *cpumask,
 								&info, 1);
 		return;
 	}
-	smp_call_function_many(cpumask, flush_tlb_func, &info, 1);
+
+	if (unlikely(smp_num_siblings <= 1)) {
+		smp_call_function_many(cpumask, flush_tlb_func, &info, 1);
+		return;
+	}
+
+	/* Only one flush needed on both siblings of SMT */
+	cpumask_copy(&flush_mask, cpumask);
+	for_each_cpu(cpu, &flush_mask) {
+		sblmask = topology_sibling_cpumask(cpu);
+		if (!cpumask_subset(sblmask, &flush_mask))
+			continue;
+
+		cpumask_clear_cpu(cpumask_next(cpu, sblmask), &flush_mask);
+	}
+
+	smp_call_function_many(&flush_mask, flush_tlb_func, &info, 1);
 }
 
 void flush_tlb_current_task(void)
