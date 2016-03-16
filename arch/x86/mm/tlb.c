@@ -135,6 +135,7 @@ void native_flush_tlb_others(const struct cpumask *cpumask,
 				 unsigned long end)
 {
 	int cpu;
+	unsigned long rand;
 	struct flush_tlb_info info;
 	cpumask_t flush_mask, *sblmask;
 
@@ -167,7 +168,16 @@ void native_flush_tlb_others(const struct cpumask *cpumask,
 		if (!cpumask_subset(sblmask, &flush_mask))
 			continue;
 
-		cpumask_clear_cpu(cpumask_next(cpu, sblmask), &flush_mask);
+		rand = jiffies;
+		/* See "Numerical Recipes in C", second edition, p. 284 */
+		rand = rand * 1664525L + 1013904223L;
+		rand &= 0x1;
+
+		if (rand == 0)
+			cpumask_clear_cpu(cpu, &flush_mask);
+		else
+			cpumask_clear_cpu(cpumask_next(cpu, sblmask),
+								&flush_mask);
 	}
 
 	smp_call_function_many(&flush_mask, flush_tlb_func, &info, 1);
