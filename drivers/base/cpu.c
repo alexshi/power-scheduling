@@ -17,6 +17,7 @@
 #include <linux/of.h>
 #include <linux/cpufeature.h>
 #include <linux/tick.h>
+#include <linux/pm_qos.h>
 
 #include "base.h"
 
@@ -376,6 +377,9 @@ int register_cpu(struct cpu *cpu, int num)
 
 	per_cpu(cpu_sys_devices, num) = &cpu->dev;
 	register_cpu_under_node(num, cpu_to_node(num));
+#ifdef CONFIG_CPU_IDLE_GOV_MENU
+	dev_pm_qos_expose_latency_limit(&cpu->dev, 0);
+#endif
 
 	return 0;
 }
